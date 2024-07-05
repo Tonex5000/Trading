@@ -7,10 +7,13 @@ import time
 import sqlite3
 import json
 import requests
+from datetime import timedelta
 from database import setup_database
 
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = 'ef679c45bcda77bd66c5ffe35f5270fb17c685ac8f4f7f0914ca428212440116'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=15)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 jwt = JWTManager(app)
 
 # Configure logging
@@ -41,6 +44,14 @@ def get_db_connection():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    current_user = get_jwt_identity()
+    new_access_token = create_access_token(identity=current_user)
+    return jsonify(access_token=new_access_token), 200
+
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -82,6 +93,7 @@ def login():
         if user:
             access_token = create_access_token(identity=user[0])
             logging.debug(f"User {username} logged in successfully")
+            refresh_token = create_refresh_token(identity=user[0])
             return jsonify(access_token=access_token), 200
         else:
             logging.warning(f"Failed login attempt for username: {username}")

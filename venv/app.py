@@ -94,9 +94,22 @@ def login():
 @jwt_required()
 def get_market_data():
     try:
-        exchange = ccxt.binance()
-        ticker = exchange.fetch_ticker('BTC/USDT')
-        logging.debug(f"Fetched market data: {ticker}")
+        # Fetch market data from CoinGecko API
+        response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
+                                params={'ids': 'bitcoin', 'vs_currencies': 'usd'})
+        if response.status_code != 200:
+            logging.error('Failed to fetch market data from CoinGecko')
+            return jsonify({"error": "Failed to fetch market data"}), 500
+
+        market_data = response.json()
+        logging.debug(f"Fetched market data: {market_data}")
+
+        # Format the response to match the expected output
+        ticker = {
+            "symbol": "BTC/USDT",
+            "price": market_data['bitcoin']['usd']
+        }
+
         return jsonify(ticker)
     except Exception as e:
         logging.exception('Error fetching market data')

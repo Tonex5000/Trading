@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, request, render_template
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from web3 import Web3
 import logging
 import ccxt

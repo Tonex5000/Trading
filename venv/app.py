@@ -132,43 +132,22 @@ def get_market_data():
 def deposit():
     try:
         user_id = get_jwt_identity()
-        data = request.json 
+        data = request.json
         user_address = data['address']
-        
-        logging.debug(f'Deposit request: user_id={user_id}, address={user_address}')
+        deposited_amount = data['amount']
+        balance_usd = data['balance']
 
-        # Fetch deposit balance from smart contract
-        deposit_balance_bnb = contract.functions.getUserDepositBalance().call({'from': user_address})
-        
-        logging.debug(f'Deposit balance from contract (BNB): {deposit_balance_bnb}')
-
-        # Fetch BNB to USD conversion rate from CoinGecko API
-        response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
-                                params={'ids': 'binancecoin', 'vs_currencies': 'usd'})
-        if response.status_code != 200:
-            logging.error('Failed to fetch conversion rate from CoinGecko')
-            return jsonify({"error": "Failed to fetch conversion rate"}), 500
-        
-        conversion_rates = response.json()
-        bnb_to_usd_rate = conversion_rates['binancecoin']['usd']
-        
-        logging.debug(f'BNB to USD conversion rate: {bnb_to_usd_rate}')
-
-        # Convert deposit balance from BNB to USD
-        deposit_balance_usd = deposit_balance_bnb * bnb_to_usd_rate
-        deposit_balance_usd = round(deposit_balance_usd, 2)  # Round to 2 decimal places
-        
-        logging.debug(f'Deposit balance in USD: {deposit_balance_usd}')
+        logging.debug(f'Deposit request: user_id={user_id}, address={user_address}, amount={deposited_amount}, balance={balance_usd}')
 
         # Connect to the database
         conn, c = get_db_connection()
-        c.execute("INSERT INTO deposits (user_id, amount) VALUES (?, ?)", (user_id, deposit_balance_usd))
-        c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (deposit_balance_usd, user_id))
+        c.execute("INSERT INTO deposits (user_id, amount) VALUES (?, ?)", (user_id, balance_usd))
+        c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
         conn.commit()
         conn.close()
 
-        logging.debug(f'Deposit successful for user_id={user_id}, amount={deposit_balance_usd}')
-        return jsonify({'address': user_address, 'deposited_amount': deposit_balance_usd})
+        logging.debug(f'Deposit successful for user_id={user_id}, amount={balance_usd}')
+        return jsonify({'address': user_address, 'deposited_amount': balance_usd})
     except Exception as e:
         logging.exception('Error during deposit')
         return str(e), 500

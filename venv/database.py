@@ -14,7 +14,12 @@ def setup_database():
     c.execute('''CREATE TABLE IF NOT EXISTS deposits (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
+        address TEXT,
         amount REAL,
+        balance_usd REAL,
+        status TEXT,
+        transaction_hash TEXT,
+        timestamp INTEGER DEFAULT (strftime('%s', 'now')),
         FOREIGN KEY(user_id) REFERENCES users(id)
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS trades (
@@ -46,7 +51,6 @@ def setup_database():
     conn.commit()
     print("Successfully created")
     conn.close()
-
 
 if __name__ == '__main__':
     setup_database()

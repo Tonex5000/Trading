@@ -39,6 +39,7 @@ contract = web3.eth.contract(address=checksum_address, abi=contract_abi)
 # Helper function to get database connection
 def get_db_connection():
     conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
+    conn.row_factory = sqlite3.Row
     return conn, conn.cursor()
 
 @app.route('/')
@@ -133,24 +134,28 @@ def deposit():
     try:
         user_id = get_jwt_identity()
         data = request.json
-        user_address = data['address']
+        user_address = data['userAddress']
         deposited_amount = data['amount']
-        balance_usd = data['balance']
+        balance_usd = data['usdBalance']
+        status = data.get('status', 'Pending')  # Default to 'Pending' if status is not provided
+        transaction_hash = data.get('transactionHash')
 
-        logging.debug(f'Deposit request: user_id={user_id}, address={user_address}, amount={deposited_amount}, balance={balance_usd}')
+        logging.debug(f'Deposit request: user_id={user_id}, address={user_address}, amount={deposited_amount}, balance={balance_usd}, status={status}, tx_hash={transaction_hash}')
 
         # Connect to the database
         conn, c = get_db_connection()
-        c.execute("INSERT INTO deposits (user_id, amount) VALUES (?, ?)", (user_id, balance_usd))
+        c.execute("INSERT INTO deposits (user_id, address, amount, balance_usd, status, transaction_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                  (user_id, user_address, deposited_amount, balance_usd, status, transaction_hash))
         c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
         conn.commit()
         conn.close()
 
         logging.debug(f'Deposit successful for user_id={user_id}, amount={balance_usd}')
-        return jsonify({'address': user_address, 'deposited_amount': balance_usd})
+        return jsonify({'address': user_address, 'deposited_amount': balance_usd, 'status': status, 'transaction_hash': transaction_hash})
     except Exception as e:
         logging.exception('Error during deposit')
         return str(e), 500
+
 
 @app.route('/spot-grid', methods=['POST'])
 @jwt_required()
@@ -363,6 +368,56 @@ def get_spot_grids():
     except Exception as e:
         logging.exception('Error fetching spot grids')
         return str(e), 500
+
+
+@app.route('/trade_history', methods=['GET'])
+def trade_history():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT timestamp, symbol, type, side, amount, price 
+        FROM trades
+    ''')
+    trades = cursor.fetchall()
+    conn.close()
+
+    trade_history = []
+    for trade in trades:
+        trade_history.append({
+            "timestamp": trade["timestamp"],
+            "symbol": trade["symbol"],
+            "type": trade["type"],
+            "side": trade["side"],
+            "amount": trade["amount"],
+            "price": trade["price"]
+        })
+
+    return jsonify(trade_history)
+
+
+@app.route('/deposit_history', methods=['GET'])
+@jwt_required()
+def get_deposit_history():
+    try:
+        user_id = get_jwt_identity()
+        conn, c = get_db_connection()
+        c.execute("SELECT amount, status, timestamp FROM deposits WHERE user_id = ?", (user_id,))
+        deposits = c.fetchall()
+        conn.close()
+
+        deposit_history = []
+        for deposit in deposits:
+            deposit_history.append({
+                'amount': deposit[0],
+                'status': deposit[1],
+                'timestamp': deposit[2]
+            })
+
+        return jsonify(deposit_history)
+    except Exception as e:
+        logging.exception('Error fetching deposit history')
+        return str(e), 500
+
 
 if __name__ == '__main__':
     setup_database()

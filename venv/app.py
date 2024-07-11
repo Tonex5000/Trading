@@ -1,58 +1,60 @@
-from flask import Flask, jsonify, request, render_template
-from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity
-from web3 import Web3
-import logging
-import ccxt
-import time
 import sqlite3
-import json
+from flask import Flask, jsonify, request, render_template
+import logging
+import jwt
+from datetime import datetime, timedelta
+from functools import wraps
 import requests
-from datetime import timedelta
 from database import setup_database
 
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = 'ef679c45bcda77bd66c5ffe35f5270fb17c685ac8f4f7f0914ca428212440116'
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=15)
-app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
-jwt = JWTManager(app)
+app.config['TOKEN_EXPIRATION_DAYS'] = 30
+app.config['SECRET_KEY'] = '09d607fc4bbd698d4334427605aa78b9899c7798a1d1998c8381cb1ca7712067'  # Ensure this is kept secret and safe
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Connect to Binance Smart Chain (BSC) node
-bsc_url = "https://bsc-dataseed.binance.org/"
-web3 = Web3(Web3.HTTPProvider(bsc_url))
-
-# Smart contract details
-contract_address = "0x479184e115870b792f4B24904368536f6B954bf6"
-
-# Convert to checksum address
-checksum_address = Web3.to_checksum_address(contract_address)
-
-# Load smart contract ABI
-with open('contract_abi.json') as f:
-    contract_abi = json.load(f)
-
-# Initialize contract
-contract = web3.eth.contract(address=checksum_address, abi=contract_abi)
-
 # Helper function to get database connection
 def get_db_connection():
-    conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
+    conn = sqlite3.connect('trading_bot.db', timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn, conn.cursor()
+
+# Helper function to create a new JWT token
+def create_token(user_id):
+    expiration = datetime.utcnow() + timedelta(days=app.config['TOKEN_EXPIRATION_DAYS'])
+    payload = {
+        'user_id': user_id,
+        'exp': expiration
+    }
+    token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
+    return token
+
+# Function to test token validity
+def test_token_validity(token):
+    try:
+        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        return True, payload['user_id']
+    except jwt.ExpiredSignatureError:
+        return False, None
+    except jwt.InvalidTokenError:
+        return False, None
+
+# Decorator to require token authentication
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({"msg": "Token is missing"}), 401
+        is_valid, user_id = test_token_validity(token)
+
+        return f(user_id, *args, **kwargs)
+    return decorated
 
 @app.route('/')
 def index():
     return render_template('index.html')
-
-@app.route('/refresh', methods=['POST'])
-@jwt_required(refresh=True)
-def refresh():
-    current_user = get_jwt_identity()
-    new_access_token = create_access_token(identity=current_user)
-    return jsonify(access_token=new_access_token), 200
-
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -86,16 +88,15 @@ def login():
 
         conn, c = get_db_connection()
         user = c.execute(
-            "SELECT * FROM users WHERE username = ? AND password = ?", 
+            "SELECT id FROM users WHERE username = ? AND password = ?", 
             (username, password)
         ).fetchone()
         conn.close()
         
         if user:
-            access_token = create_access_token(identity=user[0])
+            token = create_token(user['id'])
             logging.debug(f"User {username} logged in successfully")
-            refresh_token = create_refresh_token(identity=user[0])
-            return jsonify(access_token=access_token), 200
+            return jsonify(token=token), 200
         else:
             logging.warning(f"Failed login attempt for username: {username}")
             return jsonify({"msg": "Bad username or password"}), 401
@@ -104,10 +105,9 @@ def login():
         return str(e), 500
 
 @app.route('/market-data', methods=['GET'])
-@jwt_required()
-def get_market_data():
+@token_required
+def get_market_data(user_id):
     try:
-        # Fetch market data from CoinGecko API
         response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
                                 params={'ids': 'bitcoin', 'vs_currencies': 'usd'})
         if response.status_code != 200:
@@ -117,7 +117,6 @@ def get_market_data():
         market_data = response.json()
         logging.debug(f"Fetched market data: {market_data}")
 
-        # Format the response to match the expected output
         ticker = {
             "symbol": "BTC/USDT",
             "price": market_data['bitcoin']['usd']
@@ -129,20 +128,18 @@ def get_market_data():
         return str(e), 500
 
 @app.route('/deposit', methods=['POST'])
-@jwt_required()
-def deposit():
+@token_required
+def deposit(user_id):
     try:
-        user_id = get_jwt_identity()
         data = request.json
         user_address = data['userAddress']
         deposited_amount = data['amount']
         balance_usd = data['usdBalance']
-        status = data.get('status', 'Pending')  # Default to 'Pending' if status is not provided
+        status = data.get('status', 'Pending')
         transaction_hash = data.get('transactionHash')
 
         logging.debug(f'Deposit request: user_id={user_id}, address={user_address}, amount={deposited_amount}, balance={balance_usd}, status={status}, tx_hash={transaction_hash}')
 
-        # Connect to the database
         conn, c = get_db_connection()
         c.execute("INSERT INTO deposits (user_id, address, amount, balance_usd, status, transaction_hash) VALUES (?, ?, ?, ?, ?, ?)",
                   (user_id, user_address, deposited_amount, balance_usd, status, transaction_hash))
@@ -156,17 +153,13 @@ def deposit():
         logging.exception('Error during deposit')
         return str(e), 500
 
-
 @app.route('/spot-grid', methods=['POST'])
-@jwt_required()
-def spot_grid():
+@token_required
+def spot_grid(user_id):
     try:
         data = request.json
         app.logger.debug(f"Received request data: {data}")
 
-        user_id = get_jwt_identity()
-
-        # Extract and validate the required parameters
         required_fields = ['symbol', 'lower_price', 'upper_price', 'grid_intervals', 'investment_amount']
         for field in required_fields:
             if field not in data:
@@ -179,7 +172,6 @@ def spot_grid():
         grid_intervals = data['grid_intervals']
         investment_amount = data['investment_amount']
 
-        # Optional parameters with defaults
         trading_strategy = "Spot Grid"
         roi = data.get('roi', 0)
         pnl = data.get('pnl', 0)
@@ -193,14 +185,10 @@ def spot_grid():
             app.logger.debug(f'Insufficient funds: paper_balance={paper_balance}, investment_amount={investment_amount}')
             return jsonify({"error": "Insufficient funds"}), 400
 
-        # Deduct investment amount from paper balance
         c.execute("UPDATE users SET paper_balance = paper_balance - ? WHERE id = ?", (investment_amount, user_id))
         conn.commit()
 
-        # Adjust symbol for CoinGecko API
         coingecko_symbol = 'bitcoin'
-
-        # Get current market price from CoinGecko
         response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
                                 params={'ids': coingecko_symbol, 'vs_currencies': 'usd'})
         response_data = response.json()
@@ -210,15 +198,12 @@ def spot_grid():
 
         market_price = response_data[coingecko_symbol]['usd']
 
-        # Calculate grid prices
         grid_prices = [lower_price + x * (upper_price - lower_price) / (grid_intervals - 1) for x in range(grid_intervals)]
         if market_price not in grid_prices:
             grid_prices.append(market_price)
             grid_prices.sort()
 
         trades = []
-
-        # Create buy and sell trades
         for price in grid_prices:
             buy_amount = investment_amount / grid_intervals / price
             buy_trade = {
@@ -245,14 +230,12 @@ def spot_grid():
             }
             trades.append(sell_trade)
 
-        # Insert spot grid details
         c.execute(
             "INSERT INTO spot_grids (user_id, trading_pair, trading_strategy, roi, pnl, runtime, min_investment, status, user_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, symbol, trading_strategy, roi, pnl, runtime, investment_amount, "Active", 1)
         )
         spot_grid_id = c.lastrowid
 
-        # Insert trades
         for trade in trades:
             c.execute(
                 "INSERT INTO trades (user_id, symbol, type, side, amount, price, timestamp, spot_grid_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -269,10 +252,9 @@ def spot_grid():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/marketplace', methods=['GET'])
-@jwt_required()
-def get_marketplace():
+@token_required
+def get_marketplace(user_id):
     try:
-        user_id = get_jwt_identity()
         sort_by = request.args.get('sort_by', 'roi')
 
         conn, c = get_db_connection()
@@ -309,11 +291,9 @@ def get_marketplace():
         return str(e), 500
 
 @app.route('/paper-trades', methods=['GET'])
-@jwt_required()
-def get_paper_trades():
+@token_required
+def get_paper_trades(user_id):
     try:
-        user_id = get_jwt_identity()
-
         conn, c = get_db_connection()
         trades = c.execute("SELECT * FROM trades WHERE user_id = ?", (user_id,)).fetchall()
         conn.close()
@@ -339,11 +319,9 @@ def get_paper_trades():
         return str(e), 500
 
 @app.route('/spot-grids', methods=['GET'])
-@jwt_required()
-def get_spot_grids():
+@token_required
+def get_spot_grids(user_id):
     try:
-        user_id = get_jwt_identity()
-
         conn, c = get_db_connection()
         spot_grids = c.execute("SELECT * FROM spot_grids WHERE user_id = ?", (user_id,)).fetchall()
         conn.close()
@@ -369,16 +347,11 @@ def get_spot_grids():
         logging.exception('Error fetching spot grids')
         return str(e), 500
 
-
 @app.route('/trade_history', methods=['GET'])
-def trade_history():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT timestamp, symbol, type, side, amount, price 
-        FROM trades
-    ''')
-    trades = cursor.fetchall()
+@token_required
+def trade_history(user_id):
+    conn, c = get_db_connection()
+    trades = c.execute("SELECT timestamp, symbol, type, side, amount, price FROM trades WHERE user_id = ?", (user_id,)).fetchall()
     conn.close()
 
     trade_history = []
@@ -394,12 +367,12 @@ def trade_history():
 
     return jsonify(trade_history)
 
-
 @app.route('/deposit_history', methods=['GET'])
-@jwt_required()
-def get_deposit_history():
+@token_required
+def get_deposit_history(user_id):
     try:
-        user_id = get_jwt_identity()
+        logging.debug(f'Fetching deposit history for user_id: {user_id}')
+
         conn, c = get_db_connection()
         c.execute("SELECT amount, status, timestamp FROM deposits WHERE user_id = ?", (user_id,))
         deposits = c.fetchall()
@@ -408,16 +381,15 @@ def get_deposit_history():
         deposit_history = []
         for deposit in deposits:
             deposit_history.append({
-                'amount': deposit[0],
-                'status': deposit[1],
-                'timestamp': deposit[2]
+                'amount': deposit['amount'],
+                'status': deposit['status'],
+                'timestamp': deposit['timestamp']
             })
 
         return jsonify(deposit_history)
     except Exception as e:
         logging.exception('Error fetching deposit history')
-        return str(e), 500
-
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     setup_database()

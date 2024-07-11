@@ -9,7 +9,7 @@ from flask_cors import CORS
 from database import setup_database
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:3001"}})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 app.config['TOKEN_EXPIRATION_DAYS'] = 30
 app.config['SECRET_KEY'] = '09d607fc4bbd698d4334427605aa78b9899c7798a1d1998c8381cb1ca7712067'  # Ensure this is kept secret and safe

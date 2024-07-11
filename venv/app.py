@@ -5,9 +5,12 @@ import jwt
 from datetime import datetime, timedelta
 from functools import wraps
 import requests
+from flask_cors import CORS
 from database import setup_database
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "http://localhost:3001"}})
+
 app.config['TOKEN_EXPIRATION_DAYS'] = 30
 app.config['SECRET_KEY'] = '09d607fc4bbd698d4334427605aa78b9899c7798a1d1998c8381cb1ca7712067'  # Ensure this is kept secret and safe
 
@@ -258,11 +261,11 @@ def get_marketplace(user_id):
         sort_by = request.args.get('sort_by', 'roi')
 
         conn, c = get_db_connection()
-        if sort_by == 'roi':
+        if (sort_by == 'roi'):
             c.execute("SELECT id, trading_pair, roi, pnl, runtime, min_investment, user_count FROM spot_grids WHERE status = 'Active' ORDER BY roi DESC")
-        elif sort_by == 'pnl':
+        elif (sort_by == 'pnl'):
             c.execute("SELECT id, trading_pair, roi, pnl, runtime, min_investment, user_count FROM spot_grids WHERE status = 'Active' ORDER BY pnl DESC")
-        elif sort_by == 'copied':
+        elif (sort_by == 'copied'):
             c.execute("SELECT id, trading_pair, roi, pnl, runtime, min_investment, user_count FROM spot_grids WHERE status = 'Active' ORDER BY user_count DESC")
         else:
             conn.close()

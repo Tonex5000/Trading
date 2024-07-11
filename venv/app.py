@@ -59,14 +59,27 @@ def token_required(f):
 def index():
     return render_template('index.html')
 
+@app.route('/login-page', methods=['GET'])
+def login_page():
+    return render_template('login.html')
+
+
 @app.route('/register', methods=['POST'])
 def register():
     try:
-        data = request.json
-        username = data['username']
-        password = data['password']
-        email = data.get('email')
-        phone_number = data.get('phone_number')
+        if request.content_type == 'application/json':
+            # Handle JSON data
+            data = request.json
+            username = data['username']
+            password = data['password']
+            email = data.get('email')
+            phone_number = data.get('phone_number')
+        else:
+            # Handle form data
+            username = request.form['username']
+            password = request.form['password']
+            email = request.form.get('email')
+            phone_number = request.form.get('phone_number')
 
         conn, c = get_db_connection()
         c.execute(
@@ -85,9 +98,15 @@ def register():
 @app.route('/login', methods=['POST'])
 def login():
     try:
-        data = request.json
-        username = data['username']
-        password = data['password']
+        if request.content_type == 'application/json':
+            # Handle JSON data
+            data = request.json
+            username = data['username']
+            password = data['password']
+        else:
+            # Handle form data
+            username = request.form['username']
+            password = request.form['password']
 
         conn, c = get_db_connection()
         user = c.execute(
@@ -106,6 +125,7 @@ def login():
     except Exception as e:
         logging.exception('Error during login')
         return str(e), 500
+
 
 @app.route('/market-data', methods=['GET'])
 @token_required

@@ -179,7 +179,7 @@ def deposit(user_id):
         if request.content_type == 'application/json':
             data = request.json
             deposit_date = data['date']
-            deposited_amount_bnb = data['amount']
+            deposited_amount_bnb = float(data['amount'])
             status = data['status']
             
             # Convert BNB to USD

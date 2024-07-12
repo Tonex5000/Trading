@@ -140,7 +140,7 @@ def login():
         if user:
             token = create_token(user['id'])
             logging.debug(f"User {email} logged in successfully")
-            return jsonify(token=token), 200
+            return jsonify(token=token, email=email), 200
         else:
             logging.warning(f"Failed login attempt for email: {email}")
             return jsonify({"msg": "Bad username or password"}), 401
@@ -197,7 +197,7 @@ def deposit(user_id):
 
             conn, c = get_db_connection()
             c.execute("INSERT INTO deposits (user_id, amount, balance_usd, status, timestamp) VALUES (?, ?, ?, ?, ?)",
-                      (user_id, deposited_amount_bnb, balance_usd, status, datetime.strptime(deposit_date, '%Y-%m-%dT%H:%M:%SZ').timestamp()))
+                      (user_id, deposited_amount_bnb, balance_usd, status, datetime.strptime(deposit_date, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()))
             c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
             conn.commit()
             conn.close()

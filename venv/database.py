@@ -7,9 +7,9 @@ def setup_database():
     # Create users table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
-        username TEXT,
+        email TEXT UNIQUE,
         password TEXT,
-        email TEXT,
+        username TEXT,
         phone_number TEXT,
         paper_balance REAL DEFAULT 0
     )''')
@@ -18,12 +18,10 @@ def setup_database():
     c.execute('''CREATE TABLE IF NOT EXISTS deposits (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
-        address TEXT,
+        timestamp TEXT,
         amount REAL,
         balance_usd REAL,
         status TEXT,
-        transaction_hash TEXT,
-        timestamp INTEGER DEFAULT (strftime('%s', 'now')),
         FOREIGN KEY(user_id) REFERENCES users(id)
     )''')
 

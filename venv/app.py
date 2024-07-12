@@ -39,21 +39,32 @@ def test_token_validity(token):
         payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
         return True, payload['user_id']
     except jwt.ExpiredSignatureError:
+        logging.error('Token has expired')
         return False, None
     except jwt.InvalidTokenError:
+        logging.error('Invalid token')
         return False, None
 
-# Decorator to require token authentication
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('Authorization')
+        logging.debug(f'Received token: {token}')
         if not token:
             return jsonify({"msg": "Token is missing"}), 401
+
+        # Remove 'Bearer ' prefix if present
+        if token.startswith('Bearer '):
+            token = token[7:]
+
         is_valid, user_id = test_token_validity(token)
+
+        if not is_valid:
+            return jsonify({"msg": "Token is invalid"}), 401
 
         return f(user_id, *args, **kwargs)
     return decorated
+
 
 @app.route('/')
 def index():
@@ -70,30 +81,41 @@ def register():
         if request.content_type == 'application/json':
             # Handle JSON data
             data = request.json
-            username = data['username']
+            email = data['email']
             password = data['password']
-            email = data.get('email')
+            username = data.get('username')
             phone_number = data.get('phone_number')
         else:
             # Handle form data
-            username = request.form['username']
-            password = request.form['password']
-            email = request.form.get('email')
-            phone_number = request.form.get('phone_number')
+            data = request.form
+            email = data['email']
+            password = data['password']
+            username = data.get('username')
+            phone_number = data.get('phone_number')
+
+        if not email or not password:
+            return jsonify({"msg": "Email and password are required"}), 400
 
         conn, c = get_db_connection()
+
+        # Check if the email already exists
+        user = c.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        if user:
+            return jsonify({"msg": "Email already registered"}), 400
+
         c.execute(
-            "INSERT INTO users (username, password, email, phone_number, paper_balance) VALUES (?, ?, ?, ?, ?)", 
-            (username, password, email, phone_number, 0)
+            "INSERT INTO users (email, password, username, phone_number, paper_balance) VALUES (?, ?, ?, ?, ?)", 
+            (email, password, username, phone_number, 0)
         )
         conn.commit()
         conn.close()
-        
-        logging.debug(f"User {username} registered successfully")
+
+        logging.debug(f"User {email} registered successfully")
         return jsonify({"msg": "User created successfully"}), 201
     except Exception as e:
         logging.exception('Error during registration')
         return str(e), 500
+
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -101,26 +123,26 @@ def login():
         if request.content_type == 'application/json':
             # Handle JSON data
             data = request.json
-            username = data['username']
+            email = data['email']
             password = data['password']
         else:
             # Handle form data
-            username = request.form['username']
+            email = request.form['email']
             password = request.form['password']
 
         conn, c = get_db_connection()
         user = c.execute(
-            "SELECT id FROM users WHERE username = ? AND password = ?", 
-            (username, password)
+            "SELECT id FROM users WHERE email = ? AND password = ?", 
+            (email, password)
         ).fetchone()
         conn.close()
         
         if user:
             token = create_token(user['id'])
-            logging.debug(f"User {username} logged in successfully")
+            logging.debug(f"User {email} logged in successfully")
             return jsonify(token=token), 200
         else:
-            logging.warning(f"Failed login attempt for username: {username}")
+            logging.warning(f"Failed login attempt for email: {email}")
             return jsonify({"msg": "Bad username or password"}), 401
     except Exception as e:
         logging.exception('Error during login')
@@ -154,24 +176,36 @@ def get_market_data(user_id):
 @token_required
 def deposit(user_id):
     try:
-        data = request.json
-        user_address = data['userAddress']
-        deposited_amount = data['amount']
-        balance_usd = data['usdBalance']
-        status = data.get('status', 'Pending')
-        transaction_hash = data.get('transactionHash')
+        if request.content_type == 'application/json':
+            data = request.json
+            deposit_date = data['date']
+            deposited_amount_bnb = data['amount']
+            status = data['status']
+            
+            # Convert BNB to USD
+            try:
+                response = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd')
+                response_data = response.json()
+                rate = float(response_data['binancecoin']['usd'])
+            except Exception as e:
+                logging.exception('Error fetching BNB to USD rate')
+                return jsonify({'message': 'Failed to fetch BNB to USD conversion rate'}), 500
 
-        logging.debug(f'Deposit request: user_id={user_id}, address={user_address}, amount={deposited_amount}, balance={balance_usd}, status={status}, tx_hash={transaction_hash}')
+            balance_usd = round(deposited_amount_bnb * rate, 2)
 
-        conn, c = get_db_connection()
-        c.execute("INSERT INTO deposits (user_id, address, amount, balance_usd, status, transaction_hash) VALUES (?, ?, ?, ?, ?, ?)",
-                  (user_id, user_address, deposited_amount, balance_usd, status, transaction_hash))
-        c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
-        conn.commit()
-        conn.close()
+            logging.debug(f'Deposit request: user_id={user_id}, amount_bnb={deposited_amount_bnb}, balance_usd={balance_usd}, status={status}')
 
-        logging.debug(f'Deposit successful for user_id={user_id}, amount={balance_usd}')
-        return jsonify({'address': user_address, 'deposited_amount': balance_usd, 'status': status, 'transaction_hash': transaction_hash})
+            conn, c = get_db_connection()
+            c.execute("INSERT INTO deposits (user_id, amount, balance_usd, status, timestamp) VALUES (?, ?, ?, ?, ?)",
+                      (user_id, deposited_amount_bnb, balance_usd, status, datetime.strptime(deposit_date, '%Y-%m-%dT%H:%M:%SZ').timestamp()))
+            c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
+            conn.commit()
+            conn.close()
+
+            logging.debug(f'Deposit successful for user_id={user_id}, amount_usd={balance_usd}')
+            return jsonify({'deposited_amount_bnb': deposited_amount_bnb, 'balance_usd': balance_usd, 'status': status})
+        else:
+            return jsonify({'message': 'Content-Type must be application/json'}), 400
     except Exception as e:
         logging.exception('Error during deposit')
         return str(e), 500

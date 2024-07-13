@@ -146,7 +146,7 @@ def login():
             return jsonify(token=token, email=email), 200
         else:
             logging.warning(f"Failed login attempt for email: {email}")
-            return jsonify({"msg": "Bad username or password"}), 401
+            return jsonify({"msg": "Bad email or password"}), 401
     except Exception as e:
         logging.exception('Error during login')
         return jsonify({"msg": "Internal server error"}), 500

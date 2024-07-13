@@ -18,10 +18,14 @@ def setup_database():
     c.execute('''CREATE TABLE IF NOT EXISTS deposits (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
-        timestamp TEXT,
+        timestamp REAL,
         amount REAL,
         balance_usd REAL,
         status TEXT,
+        wallet_address TEXT,  -- New column for wallet address
+        transaction_hash TEXT,
+        contract_address TEXT,
+        transaction_fee REAL,
         FOREIGN KEY(user_id) REFERENCES users(id)
     )''')
 

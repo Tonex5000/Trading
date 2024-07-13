@@ -123,12 +123,15 @@ def login():
         if request.content_type == 'application/json':
             # Handle JSON data
             data = request.json
-            email = data['email']
-            password = data['password']
+            email = data.get('email')
+            password = data.get('password')
         else:
             # Handle form data
-            email = request.form['email']
-            password = request.form['password']
+            email = request.form.get('email')
+            password = request.form.get('password')
+
+        if not email or not password:
+            return jsonify({"msg": "Email and password are required"}), 400
 
         conn, c = get_db_connection()
         user = c.execute(
@@ -146,7 +149,8 @@ def login():
             return jsonify({"msg": "Bad username or password"}), 401
     except Exception as e:
         logging.exception('Error during login')
-        return str(e), 500
+        return jsonify({"msg": "Internal server error"}), 500
+
 
 
 @app.route('/market-data', methods=['GET'])
@@ -181,29 +185,37 @@ def deposit(user_id):
             deposit_date = data['date']
             deposited_amount_bnb = float(data['amount'])
             status = data['status']
-            
+            transaction_hash = data.get('transactionHash', 'N/A')
+            contract_address = data.get('contractAddress', 'N/A')
+            transaction_fee = float(data.get('transactionFee', 0))
+            wallet_address = data.get('walletAddress', 'N/A')
+
             # Convert BNB to USD
             try:
                 response = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd')
                 response_data = response.json()
                 rate = float(response_data['binancecoin']['usd'])
+            except KeyError:
+                logging.exception('Error fetching BNB to USD rate: KeyError')
+                return jsonify({'message': 'Failed to fetch BNB to USD conversion rate'}), 500
             except Exception as e:
                 logging.exception('Error fetching BNB to USD rate')
                 return jsonify({'message': 'Failed to fetch BNB to USD conversion rate'}), 500
 
             balance_usd = round(deposited_amount_bnb * rate, 2)
 
-            logging.debug(f'Deposit request: user_id={user_id}, amount_bnb={deposited_amount_bnb}, balance_usd={balance_usd}, status={status}')
+            logging.debug(f'Deposit request: user_id={user_id}, amount_bnb={deposited_amount_bnb}, balance_usd={balance_usd}, status={status}, transaction_hash={transaction_hash}, contract_address={contract_address}, transaction_fee={transaction_fee}')
 
             conn, c = get_db_connection()
-            c.execute("INSERT INTO deposits (user_id, amount, balance_usd, status, timestamp) VALUES (?, ?, ?, ?, ?)",
-                      (user_id, deposited_amount_bnb, balance_usd, status, datetime.strptime(deposit_date, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()))
-            c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
+            c.execute("INSERT INTO deposits (user_id, amount, balance_usd, status, timestamp, transaction_hash, contract_address, transaction_fee, wallet_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (user_id, deposited_amount_bnb, balance_usd, status, datetime.strptime(deposit_date, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp(), transaction_hash, contract_address, transaction_fee, wallet_address))
+            if status == 'Successful':
+                c.execute("UPDATE users SET paper_balance = paper_balance + ? WHERE id = ?", (balance_usd, user_id))
             conn.commit()
             conn.close()
 
             logging.debug(f'Deposit successful for user_id={user_id}, amount_usd={balance_usd}')
-            return jsonify({'deposited_amount_bnb': deposited_amount_bnb, 'balance_usd': balance_usd, 'status': status})
+            return jsonify({'deposited_amount_bnb': deposited_amount_bnb, 'balance_usd': balance_usd, 'status': status, 'transaction_hash': transaction_hash, 'contract_address': contract_address, 'transaction_fee': transaction_fee, 'wallet_address': wallet_address})
         else:
             return jsonify({'message': 'Content-Type must be application/json'}), 400
     except Exception as e:
@@ -428,10 +440,14 @@ def trade_history(user_id):
 @token_required
 def get_deposit_history(user_id):
     try:
-        logging.debug(f'Fetching deposit history for user_id: {user_id}')
+        wallet_address = request.args.get('walletAddress')
+        if not wallet_address:
+            return jsonify({'error': 'Wallet address is required'}), 400
+
+        logging.debug(f'Fetching deposit history for wallet_address: {wallet_address}')
 
         conn, c = get_db_connection()
-        c.execute("SELECT amount, status, timestamp FROM deposits WHERE user_id = ?", (user_id,))
+        c.execute("SELECT amount, status, timestamp, transaction_hash, contract_address, transaction_fee FROM deposits WHERE user_id = ? AND wallet_address = ?", (user_id, wallet_address))
         deposits = c.fetchall()
         conn.close()
 
@@ -440,13 +456,18 @@ def get_deposit_history(user_id):
             deposit_history.append({
                 'amount': deposit['amount'],
                 'status': deposit['status'],
-                'timestamp': deposit['timestamp']
+                'timestamp': deposit['timestamp'],
+                'transaction_hash': deposit['transaction_hash'],
+                'contract_address': deposit['contract_address'],
+                'transaction_fee': deposit['transaction_fee']
             })
 
         return jsonify(deposit_history)
     except Exception as e:
         logging.exception('Error fetching deposit history')
         return jsonify({'error': str(e)}), 500
+
+
 
 if __name__ == '__main__':
     setup_database()

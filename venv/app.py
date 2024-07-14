@@ -1,5 +1,5 @@
 import sqlite3
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, send_from_directory, current_app
 import logging
 import jwt
 from datetime import datetime, timedelta
@@ -7,12 +7,16 @@ from functools import wraps
 import requests
 from flask_cors import CORS
 from database import setup_database
+import os
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 app.config['TOKEN_EXPIRATION_DAYS'] = 30
 app.config['SECRET_KEY'] = '09d607fc4bbd698d4334427605aa78b9899c7798a1d1998c8381cb1ca7712067'  # Ensure this is kept secret and safe
+
+# Assuming the database is in the root directory of the project
+DATABASE_PATH = os.path.join(os.getcwd(), 'trading_bot.db')
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -222,6 +226,25 @@ def deposit(user_id):
         logging.exception('Error during deposit')
         return str(e), 500
 
+
+import requests
+
+response = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd')
+response_data = response.json()
+print(response_data)
+
+
+from flask import Flask, request, jsonify
+import requests
+import logging
+import time
+
+app = Flask(__name__)
+
+def get_db_connection():
+    # Dummy function, replace with actual database connection logic
+    pass
+
 @app.route('/spot-grid', methods=['POST'])
 @token_required
 def spot_grid(user_id):
@@ -229,7 +252,7 @@ def spot_grid(user_id):
         data = request.json
         app.logger.debug(f"Received request data: {data}")
 
-        required_fields = ['symbol', 'lower_price', 'upper_price', 'grid_intervals', 'investment_amount']
+        required_fields = ['symbol', 'lower_price', 'upper_price', 'grid_intervals', 'investment_amount', 'wallet_address']
         for field in required_fields:
             if field not in data:
                 app.logger.error(f'Missing required parameter: {field}')
@@ -240,24 +263,38 @@ def spot_grid(user_id):
         upper_price = data['upper_price']
         grid_intervals = data['grid_intervals']
         investment_amount = data['investment_amount']
+        wallet_address = data['wallet_address']
 
         trading_strategy = "Spot Grid"
         roi = data.get('roi', 0)
         pnl = data.get('pnl', 0)
         runtime = data.get('runtime', "0 days 0 hours 0 minutes")
 
-        app.logger.debug(f'Spot grid request: user_id={user_id}, symbol={symbol}, lower_price={lower_price}, upper_price={upper_price}, grid_intervals={grid_intervals}, investment_amount={investment_amount}')
+        app.logger.debug(f'Spot grid request: user_id={user_id}, wallet_address={wallet_address}, symbol={symbol}, lower_price={lower_price}, upper_price={upper_price}, grid_intervals={grid_intervals}, investment_amount={investment_amount}')
 
         conn, c = get_db_connection()
-        paper_balance = c.execute("SELECT paper_balance FROM users WHERE id = ?", (user_id,)).fetchone()[0]
-        if paper_balance is None or paper_balance < investment_amount:
-            app.logger.debug(f'Insufficient funds: paper_balance={paper_balance}, investment_amount={investment_amount}')
+
+        paper_balance_usd = get_paper_balance_usd(c, wallet_address)
+        if paper_balance_usd < investment_amount:
+            app.logger.debug(f'Insufficient funds: paper_balance_usd={paper_balance_usd}, investment_amount={investment_amount}')
             return jsonify({"error": "Insufficient funds"}), 400
 
+        # Deduct investment_amount from paper_balance
         c.execute("UPDATE users SET paper_balance = paper_balance - ? WHERE id = ?", (investment_amount, user_id))
         conn.commit()
 
-        coingecko_symbol = 'bitcoin'
+        # Fetch the appropriate conversion rate for the selected trading pair
+        symbol_map = {
+            'BTC/USD': 'bitcoin',
+            'ETH/USD': 'ethereum',
+            'BNB/USD': 'binancecoin'
+        }
+
+        coingecko_symbol = symbol_map.get(symbol)
+        if not coingecko_symbol:
+            logging.error(f"Unsupported trading pair: {symbol}")
+            return jsonify({"error": "Unsupported trading pair"}), 400
+
         response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
                                 params={'ids': coingecko_symbol, 'vs_currencies': 'usd'})
         response_data = response.json()
@@ -319,6 +356,26 @@ def spot_grid(user_id):
     except Exception as e:
         app.logger.error(f"Error during spot grid: {e}")
         return jsonify({"error": str(e)}), 500
+
+def get_paper_balance_usd(cursor, wallet_address):
+    paper_balance_bnb = cursor.execute("SELECT SUM(amount) FROM deposits WHERE wallet_address = ?", (wallet_address,)).fetchone()[0]
+    
+    if paper_balance_bnb is None:
+        return 0
+
+    coingecko_symbol = 'binancecoin'
+    response = requests.get('https://api.coingecko.com/api/v3/simple/price', 
+                            params={'ids': coingecko_symbol, 'vs_currencies': 'usd'})
+    response_data = response.json()
+    if coingecko_symbol not in response_data or 'usd' not in response_data[coingecko_symbol]:
+        logging.error(f"Unable to retrieve BNB to USD conversion rate")
+        raise Exception("Unable to retrieve conversion rate")
+
+    bnb_to_usd_rate = response_data[coingecko_symbol]['usd']
+    paper_balance_usd = paper_balance_bnb * bnb_to_usd_rate
+    
+    return paper_balance_usd
+
 
 @app.route('/marketplace', methods=['GET'])
 @token_required
@@ -447,7 +504,7 @@ def get_deposit_history(user_id):
         logging.debug(f'Fetching deposit history for wallet_address: {wallet_address}')
 
         conn, c = get_db_connection()
-        c.execute("SELECT amount, status, timestamp, transaction_hash, contract_address, transaction_fee FROM deposits WHERE user_id = ? AND wallet_address = ?", (user_id, wallet_address))
+        c.execute("SELECT amount, status, timestamp, transaction_hash, contract_address FROM deposits WHERE user_id = ? AND wallet_address = ?", (user_id, wallet_address))
         deposits = c.fetchall()
         conn.close()
 
@@ -458,8 +515,7 @@ def get_deposit_history(user_id):
                 'status': deposit['status'],
                 'timestamp': deposit['timestamp'],
                 'transaction_hash': deposit['transaction_hash'],
-                'contract_address': deposit['contract_address'],
-                'transaction_fee': deposit['transaction_fee']
+                'contract_address': deposit['contract_address']
             })
 
         return jsonify(deposit_history)
@@ -468,7 +524,15 @@ def get_deposit_history(user_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/download-db', methods=['GET'])
+def download_db():
+    directory = os.path.dirname(DATABASE_PATH)
+    filename = os.path.basename(DATABASE_PATH)
+    return send_from_directory(directory, filename, as_attachment=True)
+
+
 
 if __name__ == '__main__':
     setup_database()
     app.run(port=5000)
+    app.run(debug=True)

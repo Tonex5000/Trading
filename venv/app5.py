@@ -50,7 +50,7 @@ def setup_test_db():
 # Main function to test get_paper_balance_usd
 def main():
     conn, cursor = setup_test_db()
-    wallet_address = '0x2260E6137E221cfD0cC4993Fb08Bb189A3D8000a
+    wallet_address = '0x2260E6137E221cfD0cC4993Fb08Bb189A3D8000a'
     try:
         balance_usd = get_paper_balance_usd(cursor, wallet_address)
         print(f"Paper balance for wallet {wallet_address} in USD: {balance_usd}")

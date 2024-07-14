@@ -147,7 +147,7 @@ def login():
         if user:
             token = create_token(user['id'])
             logging.debug(f"User {email} logged in successfully")
-            return jsonify(token=token, email=email), 200
+            return jsonify(token=token), 200
         else:
             logging.warning(f"Failed login attempt for email: {email}")
             return jsonify({"msg": "Bad email or password"}), 401
